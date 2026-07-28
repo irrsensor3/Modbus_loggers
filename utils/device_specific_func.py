@@ -234,6 +234,27 @@ def tp_700(client: ModbusSerialClient, start_addr: int, reg_count: int, csv_file
 
 
 
+# Helper to write CSV row and push to Supabase for dcm_3366
+def _write_and_push(csv_file, now, device_id, fe, ap, cur, volt, Error):
+    """Writes one DCM3366 row to CSV and pushes it to Supabase.
+    fe, ap, cur, volt should already be rounded/None as needed."""
+    # write CSV (persist locally first)
+    try:
+        with open(csv_file, mode="a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([now, device_id, fe, ap, cur, volt, Error])
+    except Exception as e:
+        logger.critical(f"[dcm_3366] Failed to write to CSV: {e}")
+        # If we cannot write to CSV, that's critical for local logging; raise to let caller handle
+        raise
+
+    # best-effort push to supabase — failures only logged
+    try:
+        push_dcm_reading(device_id, fe, ap, cur, volt, Error)
+    except Exception as e:
+        logger.warning("[dcm_3366] push_dcm_reading failed for device %s: %s", device_id, e)
+
+
 def dcm_3366(client: ModbusSerialClient, start_addr: int, reg_count: int, csv_file: str, device_range: range) -> None:
     """Read DC meter (DCM3366) and save readings."""
     for device_id in device_range:
@@ -255,16 +276,19 @@ def dcm_3366(client: ModbusSerialClient, start_addr: int, reg_count: int, csv_fi
             logger.info(f"[dcm_3366] Current (A): {Current}")
             logger.info(f"[dcm_3366] Voltage (V): {Voltage}")
 
-            # Append to CSV with None values
-            with open(csv_file, mode="a", newline="") as f:
-                writer = csv.writer(f)
-                writer.writerow([now, device_id, Forward_energy, Active_power, Current, Voltage, Error])
-
-            # best-effort push to Supabase (error-case)
+            # Write to CSV and push (error-case)
             try:
-                push_dcm_reading(device_id, Forward_energy, Active_power, Current, Voltage, Error)
-            except Exception as e:
-                logger.warning(f"[dcm_3366] supabase push failed (error-case): {e}")
+                _write_and_push(csv_file, now, device_id, Forward_energy, Active_power, Current, Voltage, Error)
+            except Exception:
+                # If writing to CSV failed, attempt to close client and exit
+                try:
+                    if client.is_socket_open():
+                        client.close()
+                        logger.info("[dcm_3366] Modbus client closed due to error.")
+                except Exception as close_err:
+                    logger.info(f"[dcm_3366] Error while closing client: {close_err}")
+                logger.info("[dcm_3366] Exiting system due to critical read error.")
+                sys.exit(1)
 
             # Cleanly close client before exit
             try:
@@ -293,33 +317,29 @@ def dcm_3366(client: ModbusSerialClient, start_addr: int, reg_count: int, csv_fi
         Error = "No error"
         now = datetime.now().isoformat()
 
+        # compute rounded values once
+        fe = round(Forward_energy / 100, 3)
+        ap = round(Active_power / 1000, 3)
+        cur = round(Current / 10000, 3)
+        volt = round(Voltage / 10000, 1)
+
         logger.info(f"[dcm_3366] Datetime: {now}")
-        logger.info(f"[dcm_3366] Forward energy (kWh): {Forward_energy / 100:.3f}")
-        logger.info(f"[dcm_3366] Active power (kW): {Active_power / 1000:.3f}")
-        logger.info(f"[dcm_3366] Current (A): {Current / 10000:.3f}")
-        logger.info(f"[dcm_3366] Voltage (V): {Voltage / 10000:.1f}")
+        logger.info(f"[dcm_3366] Forward energy (kWh): {fe}")
+        logger.info(f"[dcm_3366] Active power (kW): {ap}")
+        logger.info(f"[dcm_3366] Current (A): {cur}")
+        logger.info(f"[dcm_3366] Voltage (V): {volt}")
 
-        with open(csv_file, mode="a", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                now,
-                device_id,
-                round(Forward_energy / 100, 3),
-                round(Active_power / 1000, 3),
-                round(Current / 10000, 3),
-                round(Voltage / 10000, 1),
-                Error
-            ])
-
-        # best-effort push to Supabase (success-case)
+        # Write to CSV and push (success-case)
         try:
-            fe = round(Forward_energy / 100, 3)
-            ap = round(Active_power / 1000, 3)
-            cur = round(Current / 10000, 3)
-            volt = round(Voltage / 10000, 1)
-            push_dcm_reading(device_id, fe, ap, cur, volt, Error)
+            _write_and_push(csv_file, now, device_id, fe, ap, cur, volt, Error)
         except Exception as e:
-            logger.warning(f"[dcm_3366] supabase push failed (success-case): {e}")
+            logger.critical(f"[dcm_3366] Failed to write/push data for device {device_id}: {e}")
+            try:
+                if client.is_socket_open():
+                    client.close()
+            except Exception:
+                pass
+            sys.exit(1)
 
 
 
