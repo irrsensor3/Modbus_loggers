@@ -5,6 +5,7 @@ import time
 import sys
 from datetime import datetime
 from pymodbus.client import ModbusSerialClient, ModbusTcpClient
+from utils.supabase_push import push_dcm_reading
 
 logger = logging.getLogger(__name__)
 
