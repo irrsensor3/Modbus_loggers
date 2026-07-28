@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 
+
 def list_regis(client: ModbusSerialClient, start_addr: int, reg_count: int, csv_file: str, device_range: range) -> None:
     """List and optionally save Modbus holding registers for one or more devices."""
     for unit_id in device_range:
@@ -145,6 +146,7 @@ def hoymiles_dtu_p(client: ModbusTcpClient, start_addr: int, reg_count: int,
 
 
 
+
 def tp_700(client: ModbusSerialClient, start_addr: int, reg_count: int, csv_file: str, device_range: range) -> None:
     for unit_id in device_range:
         logger.info(f"[tp_700] Reading temperature data logger (TP-700) with Modbus ID = {unit_id} ...")
@@ -231,6 +233,7 @@ def tp_700(client: ModbusSerialClient, start_addr: int, reg_count: int, csv_file
 
 
 
+
 def dcm_3366(client: ModbusSerialClient, start_addr: int, reg_count: int, csv_file: str, device_range: range) -> None:
     """Read DC meter (DCM3366) and save readings."""
     for device_id in device_range:
@@ -256,6 +259,12 @@ def dcm_3366(client: ModbusSerialClient, start_addr: int, reg_count: int, csv_fi
             with open(csv_file, mode="a", newline="") as f:
                 writer = csv.writer(f)
                 writer.writerow([now, device_id, Forward_energy, Active_power, Current, Voltage, Error])
+
+            # best-effort push to Supabase (error-case)
+            try:
+                push_dcm_reading(device_id, Forward_energy, Active_power, Current, Voltage, Error)
+            except Exception as e:
+                logger.warning(f"[dcm_3366] supabase push failed (error-case): {e}")
 
             # Cleanly close client before exit
             try:
@@ -301,6 +310,16 @@ def dcm_3366(client: ModbusSerialClient, start_addr: int, reg_count: int, csv_fi
                 round(Voltage / 10000, 1),
                 Error
             ])
+
+        # best-effort push to Supabase (success-case)
+        try:
+            fe = round(Forward_energy / 100, 3)
+            ap = round(Active_power / 1000, 3)
+            cur = round(Current / 10000, 3)
+            volt = round(Voltage / 10000, 1)
+            push_dcm_reading(device_id, fe, ap, cur, volt, Error)
+        except Exception as e:
+            logger.warning(f"[dcm_3366] supabase push failed (success-case): {e}")
 
 
 
